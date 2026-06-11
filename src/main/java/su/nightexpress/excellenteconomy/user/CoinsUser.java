@@ -49,6 +49,10 @@ public class CoinsUser extends UserTemplate {
      * @param consumer balance function.
      */
     public void editBalance(@NonNull ExcellentCurrency currency, @NonNull Consumer<UserBalance> consumer) {
+        this.tryEditBalance(currency, consumer);
+    }
+
+    public boolean tryEditBalance(@NonNull ExcellentCurrency currency, @NonNull Consumer<UserBalance> consumer) {
         double oldBalance = this.getBalance(currency);
 
         consumer.accept(this.balance);
@@ -58,7 +62,10 @@ public class CoinsUser extends UserTemplate {
 
         if (event.isCancelled()) {
             this.balance.set(currency, oldBalance);
+            return false;
         }
+
+        return true;
     }
 
     public void resetBalance(@NonNull Collection<ExcellentCurrency> currencies) {
@@ -67,6 +74,10 @@ public class CoinsUser extends UserTemplate {
 
     public void resetBalance(@NonNull ExcellentCurrency currency) {
         this.editBalance(currency, bal -> bal.set(currency, currency.getStartValue()));
+    }
+
+    public boolean tryResetBalance(@NonNull ExcellentCurrency currency) {
+        return this.tryEditBalance(currency, bal -> bal.set(currency, currency.getStartValue()));
     }
 
     public boolean hasEnough(@NonNull ExcellentCurrency currency, double amount) {
@@ -81,12 +92,24 @@ public class CoinsUser extends UserTemplate {
         this.editBalance(currency, bal -> bal.add(currency, amount));
     }
 
+    public boolean tryAddBalance(@NonNull ExcellentCurrency currency, double amount) {
+        return this.tryEditBalance(currency, bal -> bal.add(currency, amount));
+    }
+
     public void removeBalance(@NonNull ExcellentCurrency currency, double amount) {
         this.editBalance(currency, lookup -> lookup.remove(currency, amount));
     }
 
+    public boolean tryRemoveBalance(@NonNull ExcellentCurrency currency, double amount) {
+        return this.tryEditBalance(currency, lookup -> lookup.remove(currency, amount));
+    }
+
     public void setBalance(@NonNull ExcellentCurrency currency, double amount) {
         this.editBalance(currency, lookup -> lookup.set(currency, amount));
+    }
+
+    public boolean trySetBalance(@NonNull ExcellentCurrency currency, double amount) {
+        return this.tryEditBalance(currency, lookup -> lookup.set(currency, amount));
     }
 
     @NonNull

@@ -81,6 +81,7 @@ public class CurrencyManager extends AbstractManager<EconomyPlugin> {
         this.plugin.addGlobalPlaceholders(new PlayerBalancePlaceholders(this.registry, this));
 
         FileUtil.findYamlFiles(this.getDirectory()).forEach(this::loadCurrency);
+        this.dataHandler.ensureUserIntegrity(this.registry.getCurrencies());
 
         try {
             this.loadLogger();
@@ -410,7 +411,7 @@ public class CurrencyManager extends AbstractManager<EconomyPlugin> {
             sender) ? Lang.CURRENCY_BALANCE_DISPLAY_OWN : Lang.CURRENCY_BALANCE_DISPLAY_OTHERS), sender,
             builder -> builder
                 .with(CommonPlaceholders.PLAYER_NAME, user::getName)
-                .with(EconomyPlaceholders.GENERIC_BALANCE, () -> currency.format(user.getBalance(currency)))
+                .with(EconomyPlaceholders.GENERIC_BALANCE, () -> currency.format(this.getFreshBalance(user, currency)))
         );
     }
 
@@ -466,6 +467,14 @@ public class CurrencyManager extends AbstractManager<EconomyPlugin> {
         return user.getBalance(currency);
     }
 
+    public double getFreshBalance(@NonNull CoinsUser user, @NonNull ExcellentCurrency currency) {
+        double balance = this.dataHandler.fetchBalance(user.getId(), currency).orElse(user.getBalance(currency));
+        if (this.dataHandler.isAtomicBalances()) {
+            user.getBalance().set(currency, balance);
+        }
+        return balance;
+    }
+
     @NonNull
     public OperationResult give(@NonNull OperationContext context, @NonNull Player player,
                                 @NonNull ExcellentCurrency currency, double amount) {
@@ -479,8 +488,20 @@ public class CurrencyManager extends AbstractManager<EconomyPlugin> {
 
         OperationExecutor executor = context.getExecutor();
 
-        user.addBalance(currency, amount);
-        user.markDirty();
+        double oldBalance = user.getBalance(currency);
+        if (!user.tryAddBalance(currency, amount)) return OperationResult.FAILURE;
+
+        if (this.dataHandler.isAtomicBalances()) {
+            DataHandler.BalanceResult result = this.dataHandler.addBalance(user, currency, amount);
+            if (!result.success()) {
+                user.getBalance().set(currency, oldBalance);
+                return OperationResult.FAILURE;
+            }
+            user.getBalance().set(currency, result.balance());
+        }
+        else {
+            user.markDirty();
+        }
 
         if (this.logger != null && context.shouldNotifyLogger()) {
             this.logger.addEntry(context, "[%s] %s gave %s to %s. New balance: %s"
@@ -524,8 +545,20 @@ public class CurrencyManager extends AbstractManager<EconomyPlugin> {
             Player target = user.player().orElse(null);
             if (target == null) return; // Only online players should be affected.
 
-            user.addBalance(currency, amount);
-            user.markDirty();
+            double oldBalance = user.getBalance(currency);
+            if (!user.tryAddBalance(currency, amount)) return;
+
+            if (this.dataHandler.isAtomicBalances()) {
+                DataHandler.BalanceResult result = this.dataHandler.addBalance(user, currency, amount);
+                if (!result.success()) {
+                    user.getBalance().set(currency, oldBalance);
+                    return;
+                }
+                user.getBalance().set(currency, result.balance());
+            }
+            else {
+                user.markDirty();
+            }
 
             if (context.shouldNotify(NotificationTarget.USER)) {
                 currency.sendPrefixed(Lang.COMMAND_CURRENCY_GIVE_NOTIFY, target, builder -> builder
@@ -565,8 +598,20 @@ public class CurrencyManager extends AbstractManager<EconomyPlugin> {
 
         OperationExecutor executor = context.getExecutor();
 
-        user.removeBalance(currency, amount);
-        user.markDirty();
+        double oldBalance = user.getBalance(currency);
+        if (!user.tryRemoveBalance(currency, amount)) return OperationResult.FAILURE;
+
+        if (this.dataHandler.isAtomicBalances()) {
+            DataHandler.BalanceResult result = this.dataHandler.removeBalance(user, currency, amount);
+            if (!result.success()) {
+                user.getBalance().set(currency, oldBalance);
+                return OperationResult.FAILURE;
+            }
+            user.getBalance().set(currency, result.balance());
+        }
+        else {
+            user.markDirty();
+        }
 
         if (this.logger != null && context.shouldNotifyLogger()) {
             this.logger.addEntry(context, "[%s] %s took %s from %s's balance. New balance: %s"
@@ -597,6 +642,50 @@ public class CurrencyManager extends AbstractManager<EconomyPlugin> {
     }
 
     @NonNull
+    public OperationResult withdraw(@NonNull OperationContext context, @NonNull CoinsUser user,
+                                    @NonNull ExcellentCurrency currency, double amount) {
+        if (!this.assertOperationsEnabled(context)) return OperationResult.FAILURE;
+
+        double currentBalance = this.getFreshBalance(user, currency);
+        user.getBalance().set(currency, currentBalance);
+
+        if (currentBalance < Math.abs(amount)) {
+            return OperationResult.FAILURE;
+        }
+
+        double oldBalance = user.getBalance(currency);
+        if (!user.tryRemoveBalance(currency, amount)) return OperationResult.FAILURE;
+
+        if (this.dataHandler.isAtomicBalances()) {
+            DataHandler.BalanceResult result = this.dataHandler.withdrawBalance(user, currency, amount);
+            if (!result.success()) {
+                user.getBalance().set(currency, result.status() == DataHandler.BalanceStatus.INSUFFICIENT_FUNDS
+                    ? result.balance()
+                    : oldBalance);
+                return OperationResult.FAILURE;
+            }
+            user.getBalance().set(currency, result.balance());
+        }
+        else {
+            user.markDirty();
+        }
+
+        return OperationResult.SUCCESS;
+    }
+
+    public void persistBalance(@NonNull CoinsUser user, @NonNull ExcellentCurrency currency) {
+        if (this.dataHandler.isAtomicBalances()) {
+            DataHandler.BalanceResult result = this.dataHandler.setBalance(user, currency, user.getBalance(currency));
+            if (result.success()) {
+                user.getBalance().set(currency, result.balance());
+            }
+            return;
+        }
+
+        user.markDirty();
+    }
+
+    @NonNull
     public OperationResult set(@NonNull OperationContext context, @NonNull Player player,
                                @NonNull ExcellentCurrency currency, double amount) {
         return this.set(context, this.userManager.getOrFetch(player), currency, amount);
@@ -609,8 +698,20 @@ public class CurrencyManager extends AbstractManager<EconomyPlugin> {
 
         OperationExecutor executor = context.getExecutor();
 
-        user.setBalance(currency, amount);
-        user.markDirty();
+        double oldBalance = user.getBalance(currency);
+        if (!user.trySetBalance(currency, amount)) return OperationResult.FAILURE;
+
+        if (this.dataHandler.isAtomicBalances()) {
+            DataHandler.BalanceResult result = this.dataHandler.setBalance(user, currency, user.getBalance(currency));
+            if (!result.success()) {
+                user.getBalance().set(currency, oldBalance);
+                return OperationResult.FAILURE;
+            }
+            user.getBalance().set(currency, result.balance());
+        }
+        else {
+            user.markDirty();
+        }
 
         if (this.logger != null && context.shouldNotifyLogger()) {
             this.logger.addEntry(context, "[%s] %s set %s's balance to %s. New balance: %s"
@@ -654,8 +755,20 @@ public class CurrencyManager extends AbstractManager<EconomyPlugin> {
 
         OperationExecutor executor = context.getExecutor();
 
-        user.resetBalance(currency);
-        user.markDirty();
+        double oldBalance = user.getBalance(currency);
+        if (!user.tryResetBalance(currency)) return OperationResult.FAILURE;
+
+        if (this.dataHandler.isAtomicBalances()) {
+            DataHandler.BalanceResult result = this.dataHandler.setBalance(user, currency, user.getBalance(currency));
+            if (!result.success()) {
+                user.getBalance().set(currency, oldBalance);
+                return OperationResult.FAILURE;
+            }
+            user.getBalance().set(currency, result.balance());
+        }
+        else {
+            user.markDirty();
+        }
 
         if (this.logger != null && context.shouldNotifyLogger()) {
             this.logger.addEntry(context, "[%s] %s reset %s's balance of %s to %s."
@@ -707,6 +820,12 @@ public class CurrencyManager extends AbstractManager<EconomyPlugin> {
         }
 
         CoinsUser fromUser = this.userManager.getOrFetch(sender);
+
+        if (this.dataHandler.isAtomicBalances()) {
+            this.dataHandler.fetchBalance(fromUser.getId(), currency).ifPresent(balance -> fromUser.getBalance().set(currency, balance));
+            this.dataHandler.fetchBalance(targetUser.getId(), currency).ifPresent(balance -> targetUser.getBalance().set(currency, balance));
+        }
+
         if (amount > fromUser.getBalance(currency)) {
             currency.sendPrefixed(Lang.CURRENCY_SEND_ERROR_NOT_ENOUGH, sender);
             return false;
@@ -720,10 +839,36 @@ public class CurrencyManager extends AbstractManager<EconomyPlugin> {
             return false;
         }
 
-        targetUser.addBalance(currency, amount);
-        targetUser.markDirty();
-        fromUser.removeBalance(currency, amount);
-        fromUser.markDirty();
+        double fromOld = fromUser.getBalance(currency);
+        double targetOld = targetUser.getBalance(currency);
+
+        if (!fromUser.tryRemoveBalance(currency, amount)) return false;
+        if (!targetUser.tryAddBalance(currency, amount)) {
+            fromUser.getBalance().set(currency, fromOld);
+            return false;
+        }
+
+        if (this.dataHandler.isAtomicBalances()) {
+            DataHandler.TransferResult result = this.dataHandler.transfer(fromUser, targetUser, currency, amount);
+            if (!result.success()) {
+                fromUser.getBalance().set(currency, result.status() == DataHandler.BalanceStatus.INSUFFICIENT_FUNDS
+                    ? result.sourceBalance()
+                    : fromOld);
+                targetUser.getBalance().set(currency, targetOld);
+
+                if (result.status() == DataHandler.BalanceStatus.INSUFFICIENT_FUNDS) {
+                    currency.sendPrefixed(Lang.CURRENCY_SEND_ERROR_NOT_ENOUGH, sender);
+                }
+                return false;
+            }
+
+            fromUser.getBalance().set(currency, result.sourceBalance());
+            targetUser.getBalance().set(currency, result.targetBalance());
+        }
+        else {
+            fromUser.markDirty();
+            targetUser.markDirty();
+        }
 
         currency.sendPrefixed(Lang.CURRENCY_SEND_DONE_SENDER, sender, builder -> builder
             .with(EconomyPlaceholders.GENERIC_AMOUNT, () -> currency.format(amount))
@@ -771,6 +916,11 @@ public class CurrencyManager extends AbstractManager<EconomyPlugin> {
         }
 
         CoinsUser user = this.userManager.getOrFetch(player);
+        if (this.dataHandler.isAtomicBalances()) {
+            this.dataHandler.fetchBalance(user.getId(), sourceCurrency).ifPresent(balance -> user.getBalance().set(sourceCurrency, balance));
+            this.dataHandler.fetchBalance(user.getId(), targetCurrency).ifPresent(balance -> user.getBalance().set(targetCurrency, balance));
+        }
+
         if (user.getBalance(sourceCurrency) < amount) {
             sourceCurrency.sendPrefixed(Lang.CURRENCY_EXCHANGE_ERROR_LOW_BALANCE, player, builder -> builder
                 .with(EconomyPlaceholders.GENERIC_AMOUNT, () -> sourceCurrency.format(amount))
@@ -800,9 +950,44 @@ public class CurrencyManager extends AbstractManager<EconomyPlugin> {
             return false;
         }
 
-        user.removeBalance(sourceCurrency, amount);
-        user.addBalance(targetCurrency, result);
-        user.markDirty();
+        double sourceOld = user.getBalance(sourceCurrency);
+        double targetOld = user.getBalance(targetCurrency);
+
+        if (!user.tryRemoveBalance(sourceCurrency, amount)) return false;
+        if (!user.tryAddBalance(targetCurrency, result)) {
+            user.getBalance().set(sourceCurrency, sourceOld);
+            return false;
+        }
+
+        if (this.dataHandler.isAtomicBalances()) {
+            DataHandler.TransferResult operation = this.dataHandler.exchange(user, sourceCurrency, targetCurrency, amount, result);
+            if (!operation.success()) {
+                boolean hasAuthoritativeBalances = operation.status() == DataHandler.BalanceStatus.INSUFFICIENT_FUNDS ||
+                    operation.status() == DataHandler.BalanceStatus.LIMIT_EXCEEDED;
+
+                user.getBalance().set(sourceCurrency, hasAuthoritativeBalances ? operation.sourceBalance() : sourceOld);
+                user.getBalance().set(targetCurrency, hasAuthoritativeBalances ? operation.targetBalance() : targetOld);
+
+                if (operation.status() == DataHandler.BalanceStatus.INSUFFICIENT_FUNDS) {
+                    sourceCurrency.sendPrefixed(Lang.CURRENCY_EXCHANGE_ERROR_LOW_BALANCE, player, builder -> builder
+                        .with(EconomyPlaceholders.GENERIC_AMOUNT, () -> sourceCurrency.format(amount))
+                    );
+                }
+                else if (operation.status() == DataHandler.BalanceStatus.LIMIT_EXCEEDED) {
+                    targetCurrency.sendPrefixed(Lang.CURRENCY_EXCHANGE_ERROR_LIMIT_EXCEED, player, builder -> builder
+                        .with(EconomyPlaceholders.GENERIC_AMOUNT, () -> targetCurrency.format(result))
+                        .with(EconomyPlaceholders.GENERIC_MAX, () -> targetCurrency.format(targetCurrency.getMaxValue()))
+                    );
+                }
+                return false;
+            }
+
+            user.getBalance().set(sourceCurrency, operation.sourceBalance());
+            user.getBalance().set(targetCurrency, operation.targetBalance());
+        }
+        else {
+            user.markDirty();
+        }
 
         sourceCurrency.sendPrefixed(Lang.CURRENCY_EXCHANGE_SUCCESS, player, builder -> builder
             .with(EconomyPlaceholders.GENERIC_BALANCE, () -> sourceCurrency.format(amount))

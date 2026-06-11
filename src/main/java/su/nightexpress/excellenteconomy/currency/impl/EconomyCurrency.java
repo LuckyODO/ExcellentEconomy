@@ -129,7 +129,7 @@ public class EconomyCurrency extends AbstractCurrency implements Economy {
     }
 
     private double getBalance(@Nullable CoinsUser user) {
-        return user == null ? 0D : user.getBalance(this);
+        return user == null ? 0D : this.api.dataHandler().fetchBalance(user.getId(), this).orElse(user.getBalance(this));
     }
 
 
@@ -177,7 +177,7 @@ public class EconomyCurrency extends AbstractCurrency implements Economy {
     }
 
     private boolean has(@Nullable CoinsUser user, double amount) {
-        return user != null && user.hasEnough(this, amount);
+        return user != null && this.getBalance(user) >= amount;
     }
 
 
@@ -246,15 +246,11 @@ public class EconomyCurrency extends AbstractCurrency implements Economy {
                 .text());
         }
 
-        if (!user.hasEnough(this, amount)) {
-            return new EconomyResponse(amount, user.getBalance(
-                this), EconomyResponse.ResponseType.FAILURE, Lang.ECONOMY_ERROR_INSUFFICIENT_FUNDS.text());
-        }
-
-        OperationResult result = this.api.currencyManager().remove(this.operationContext(), user, this, amount);
+        OperationResult result = this.api.currencyManager().withdraw(this.operationContext(), user, this, amount);
         EconomyResponse.ResponseType type = result == OperationResult.SUCCESS ? EconomyResponse.ResponseType.SUCCESS : EconomyResponse.ResponseType.FAILURE;
+        String error = result == OperationResult.SUCCESS ? null : Lang.ECONOMY_ERROR_INSUFFICIENT_FUNDS.text();
 
-        return new EconomyResponse(amount, user.getBalance(this), type, null);
+        return new EconomyResponse(amount, user.getBalance(this), type, error);
     }
 
     @NotNull

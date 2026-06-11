@@ -125,7 +125,7 @@ public class MigrationManager extends SimpleManager<EconomyPlugin> {
             }
 
             user.setBalance(currency, amount);
-            user.markDirty();
+            this.currencyManager.persistBalance(user, currency);
         });
     }
 

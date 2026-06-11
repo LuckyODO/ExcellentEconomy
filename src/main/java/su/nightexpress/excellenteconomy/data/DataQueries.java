@@ -74,20 +74,27 @@ public class DataQueries {
             builder.setDouble(column, user -> user.getBalance().get(id));
         });
 
-        return builder.build();
+        return builder.ignoreDuplications().build();
     }
 
     @NonNull
     public static UpdateStatement<CoinsUser> userUpdate() {
+        return userUpdate(true);
+    }
+
+    @NonNull
+    public static UpdateStatement<CoinsUser> userUpdate(boolean includeBalances) {
         var builder = UpdateStatement.<CoinsUser>builder()
             .setString(DataColumns.USER_NAME, CoinsUser::getName)
             .setString(DataColumns.USER_SETTINGS, user -> DataHandler.GSON.toJson(user.getSettingsMap()))
             .setLong(DataColumns.USER_LAST_SEEN, CoinsUser::getLastSeen)
             .setBoolean(DataColumns.USER_HIDE_FROM_TOPS, CoinsUser::isHiddenFromTops);
 
-        DataColumns.currencies().forEach((id, column) -> {
-            builder.setDouble(column, user -> user.getBalance().get(id));
-        });
+        if (includeBalances) {
+            DataColumns.currencies().forEach((id, column) -> {
+                builder.setDouble(column, user -> user.getBalance().get(id));
+            });
+        }
 
         return builder.build();
     }

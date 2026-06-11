@@ -121,8 +121,8 @@ public class ExcellentEconomyProvider implements ExcellentEconomyAPI {
     @Override
     @NonNull
     public CompletableFuture<Double> getBalanceAsync(@NonNull UUID playerId, @NonNull ExcellentCurrency currency) {
-        return this.userManager().loadByIdAsync(playerId).thenApply(opt -> opt.map(user -> user.getBalance(currency))
-            .orElse(0D));
+        return this.userManager().loadByIdAsync(playerId).thenApply(opt -> opt.map(user -> this.currencyManager()
+            .getFreshBalance(user, currency)).orElse(0D));
     }
 
     @Override
@@ -132,7 +132,7 @@ public class ExcellentEconomyProvider implements ExcellentEconomyAPI {
 
     @Override
     public double getBalance(@NonNull Player player, @NonNull ExcellentCurrency currency) {
-        return this.getCachedUserData(player).getBalance(currency);
+        return this.currencyManager().getFreshBalance(this.getCachedUserData(player), currency);
     }
 
 
@@ -218,7 +218,7 @@ public class ExcellentEconomyProvider implements ExcellentEconomyAPI {
     public CompletableFuture<OperationResult> withdrawAsync(@NonNull UUID playerId, @NonNull ExcellentCurrency currency,
                                                             double amount, @NonNull OperationContext context) {
         return this.userManager().loadByIdAsync(playerId)
-            .thenApply(opt -> opt.map(user -> this.currencyManager().remove(context, user, currency, amount)).orElse(
+            .thenApply(opt -> opt.map(user -> this.currencyManager().withdraw(context, user, currency, amount)).orElse(
                 OperationResult.FAILURE));
     }
 
@@ -242,7 +242,8 @@ public class ExcellentEconomyProvider implements ExcellentEconomyAPI {
     @Override
     public boolean withdraw(@NonNull Player player, @NonNull ExcellentCurrency currency, double amount,
                             @NonNull OperationContext context) {
-        return this.currencyManager().remove(context, player, currency, amount) == OperationResult.SUCCESS;
+        return this.currencyManager().withdraw(context, this.userManager().getOrFetch(player), currency, amount) ==
+            OperationResult.SUCCESS;
     }
 
 
